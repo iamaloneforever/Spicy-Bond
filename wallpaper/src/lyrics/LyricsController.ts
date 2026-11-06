@@ -1,4 +1,4 @@
-import { lookupLyrics, lookupSelectedLyrics } from './PublicLyrics';
+import { lookupLyrics, lookupSelectedLyrics, lyricsCache } from './PublicLyrics';
 import type { SongCandidate } from '../music/SongSearch';
 import { parsePlayback, lyricPosition, type Lyrics, type Playback } from './Lyrics';
 import { defaults, type Config } from '../core/Config';
@@ -27,6 +27,7 @@ export class LyricsController {
   private key = '';
   private disposed = false;
   private song = '';
+  private countedSongKey = '';
   private selected: SongCandidate | null = null;
   private enabled = false;
   onContext: ((identity: string, playback: Playback | null, enabled: boolean, allowPublic: boolean, hasLyrics: boolean) => void) | null = null;
@@ -82,11 +83,12 @@ export class LyricsController {
     renderer.appearance(this.appearance, this.reducedMotion.matches);
     if (this.allowPublic !== allowPublic) { this.allowPublic = allowPublic; this.generation++; this.request?.abort(); this.attempted = ''; this.nextRetry = 0; this.nextLyricRetry = 0; this.clear(); }
     const song = track ? track.title + '\n' + (track.artist || track.albumArtist) + '\n' + track.album : '';
+    if (!track) this.countedSongKey = '';
     if (song !== this.song) { this.song = song; this.selected = null; this.generation++; this.request?.abort(); this.playback = null; this.attempted = ''; this.nextPoll = 0; this.nextRetry = 0; this.nextLyricRetry = 0; this.clear(); }
     this.enabled = enabled && !!track;
     this.onContext?.(this.song, this.playback, this.enabled, this.allowPublic, !!this.lyrics);
     if (!enabled || !track) { this.setVisible(false); return; }
-    if (now >= this.nextPoll && !this.pending && now >= this.nextRetry) { this.nextPoll = now + 500; void this.poll(track); }
+    if (now >= this.nextPoll && !this.pending && now >= this.nextRetry) { this.nextPoll = now + 1000; void this.poll(track); }
     if (!this.playback || !this.lyrics || now - this.received > 3500) { this.setVisible(false); return; }
     this.lastPosition = lyricPosition(this.playback, this.received, now, this.appearance.lyricOffset);
     if (this.rendered !== this.lyrics) {
@@ -132,6 +134,11 @@ export class LyricsController {
       if (!playback || !this.sameSong(track, playback)) { this.generation++; this.request?.abort(); this.attempted = ''; this.playback = null; this.clear(); this.status.textContent = 'Waiting for matching song metadata and a usable playback timeline from the Windows companion.'; return; }
       const age = playback.capturedAtUnixMs === undefined ? 0 : Math.max(0, Date.now() - playback.capturedAtUnixMs);
       if (age > 3500) throw new Error('Stale playback snapshot');
+      const playIdentity = JSON.stringify([playback.title.normalize('NFKC').toLocaleLowerCase().replace(/[^\p{L}\p{N}]/gu, ''), playback.artist.normalize('NFKC').toLocaleLowerCase().replace(/[^\p{L}\p{N}]/gu, '')]);
+      if (playback.isPlaying && playIdentity !== this.countedSongKey) {
+        this.countedSongKey = playIdentity;
+        void lyricsCache.recordPlay({ songKey: playIdentity, title: playback.title, artist: playback.artist });
+      }
       this.playback = playback; this.received = performance.now() - age;
       this.onContext?.(this.song, playback, this.enabled, this.allowPublic, !!this.lyrics);
 

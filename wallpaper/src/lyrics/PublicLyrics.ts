@@ -1,5 +1,6 @@
 import type { SongCandidate } from '../music/SongSearch';
 import { parseLyrics, type Lyrics, type LyricLine, type Playback } from './Lyrics';
+import { LyricsCacheManager, type LyricCacheItem } from './LyricsCacheManager';
 
 const normalize = (text: string) => text.normalize('NFKC').toLocaleLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
 
@@ -32,6 +33,14 @@ export function parseLrclib(raw: unknown, playback: Playback): Lyrics | null {
 }
 
 export interface LookupResult { lyrics: Lyrics | null; detail: string; retryMs?: number }
+export const lyricsCache = new LyricsCacheManager<LookupResult>();
+const cachePart = (value: string) => value.normalize('NFKC').toLocaleLowerCase().trim();
+const songMeta = (playback: Playback) => ({ songKey: JSON.stringify([normalize(playback.title), normalize(playback.artist)]), title: playback.title, artist: playback.artist });
+const cacheableLookup = (result: LookupResult) => !!result.lyrics || result.retryMs === undefined && (result.detail.includes('No lyrics') || result.detail.includes('No matching lyrics') || result.detail.includes('ambiguous'));
+const lookupKey = (playback: Playback, album: string, key: string, allowPublic: boolean) => JSON.stringify([
+  'lookup', cachePart(playback.title), cachePart(playback.artist), Math.round(playback.duration), playback.trackId,
+  cachePart(album), !!key, allowPublic,
+]);
 async function lookupPublicLyrics(playback: Playback, album: string, signal: AbortSignal): Promise<LookupResult> {
   const query = new URLSearchParams({ track_name: playback.title, artist_name: playback.artist, duration: String(playback.duration) });
   if (album) query.set('album_name', album);
@@ -56,7 +65,7 @@ async function lookupSpicyLyrics(playback: Playback, key: string, signal: AbortS
   return { lyrics: null, detail: response.status === 404 ? 'No lyrics for this song.' : `Spicy Lyrics returned ${response.status}. Check the key and allowed origin.`,
     retryMs: response.status === 429 ? Math.max(30, Number(response.headers.get('Retry-After')) || 60) * 1000 : undefined };
 }
-export async function lookupLyrics(playback: Playback, album: string, key: string, signal: AbortSignal, allowPublic: boolean): Promise<LookupResult> {
+async function lookupLyricsUncached(playback: Playback, album: string, key: string, signal: AbortSignal, allowPublic: boolean): Promise<LookupResult> {
   const operations: { name: string; run: () => Promise<LookupResult> }[] = [];
   if (key && playback.trackId) operations.push({ name: 'Spicy Lyrics', run: () => lookupSpicyLyrics(playback, key, signal) });
   if (allowPublic) operations.push({ name: 'LRCLIB', run: () => lookupPublicLyrics(playback, album, AbortSignal.any([signal, AbortSignal.timeout(12000)])) });
@@ -73,16 +82,27 @@ export async function lookupLyrics(playback: Playback, album: string, key: strin
   return { lyrics: null, detail: [...new Set(results.map(result => result.detail))].join(' '), retryMs: Math.max(...retries) || undefined };
 }
 
+export function lookupLyrics(playback: Playback, album: string, key: string, signal: AbortSignal, allowPublic: boolean): Promise<LookupResult> {
+  if (!key && !allowPublic) return lookupLyricsUncached(playback, album, key, signal, allowPublic);
+  return lyricsCache.getOrLoad(lookupKey(playback, album, key, allowPublic), sharedSignal =>
+    lookupLyricsUncached(playback, album, key, sharedSignal, allowPublic), cacheableLookup, signal, songMeta(playback));
+}
+
 /** User selection explicitly corrects the lookup identity; playback still uses the native clock. */
 export async function lookupSelectedLyrics(playback: Playback, candidate: SongCandidate, key: string, signal: AbortSignal, allowPublic: boolean): Promise<LookupResult> {
   const recording = { ...playback, title: candidate.title, artist: candidate.artist, trackId: candidate.spotifyId, duration: candidate.duration || playback.duration };
   if (candidate.lrcId) {
     if (!allowPublic) return { lyrics: null, detail: 'Enable LRCLIB fallback in settings to load these lyrics.' };
-    const response = await fetch(`https://lrclib.net/api/get/${candidate.lrcId}`, { signal });
-    if (!response.ok) return { lyrics: null, detail: response.status === 404 ? 'No lyrics for this recording.' : `LRCLIB returned ${response.status}.`, retryMs: response.status === 429 ? 60000 : undefined };
-    const data: unknown = await response.json();
-    const lyrics = data && typeof data === 'object' && (data as Record<string, unknown>).id === candidate.lrcId ? parseLrclib(data, recording) : null;
-    return { lyrics, detail: lyrics ? 'LRCLIB' : 'No matching lyrics for this recording.' };
+    const cacheKey = JSON.stringify(['selected-lrclib', candidate.lrcId, cachePart(recording.title), cachePart(recording.artist), Math.round(recording.duration)]);
+    return lyricsCache.getOrLoad(cacheKey, async sharedSignal => {
+      const response = await fetch(`https://lrclib.net/api/get/${candidate.lrcId}`, { signal: sharedSignal });
+      if (!response.ok) return { lyrics: null, detail: response.status === 404 ? 'No lyrics for this recording.' : `LRCLIB returned ${response.status}.`, retryMs: response.status === 429 ? 60000 : undefined };
+      const data: unknown = await response.json();
+      const lyrics = data && typeof data === 'object' && (data as Record<string, unknown>).id === candidate.lrcId ? parseLrclib(data, recording) : null;
+      return { lyrics, detail: lyrics ? 'LRCLIB' : 'No matching lyrics for this recording.' };
+    }, cacheableLookup, signal, songMeta(recording));
   }
   return lookupLyrics(recording, candidate.album, key, signal, allowPublic);
 }
+
+export type { LyricCacheItem };

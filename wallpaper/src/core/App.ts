@@ -12,6 +12,7 @@ import { SettingsInteraction } from '../ui/SettingsInteraction';
 import { settingsMarkup } from '../ui/Settings';
 import { defaults, loadConfig, nextMode, saveConfig } from './Config';
 import { LyricsController } from '../lyrics/LyricsController';
+import { lyricsCache } from '../lyrics/PublicLyrics';
 import { SongPicker } from '../ui/SongPicker';
 import { SettingsSync } from './SettingsSync';
 import { CustomEffectControls } from '../ui/CustomEffectControls';
@@ -135,6 +136,17 @@ export class App {
       this.lyricsKey = key; this.lyrics.configure(key);
       this.settingsSync?.changed({ version: 1, config: this.config, lyricsKey: this.lyricsKey, customEffects: this.customEffects.snapshot() });
     });
+    this.listen(this.query('#clear-lyrics-cache'), 'click', () => {
+      void lyricsCache.clear().then(() => { this.query('#lyrics-cache-status').textContent = 'Saved lyric cache cleared from this device.'; return this.refreshLyricsCacheUI(); });
+    });
+    this.listen(this.query('#lyrics-cache-list'), 'click', event => {
+      const button = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-remove-cache-song]');
+      if (!button) return;
+      void lyricsCache.removeSong(button.dataset.removeCacheSong!).then(() => {
+        this.query('#lyrics-cache-status').textContent = 'Song removed from the lyric cache.';
+        return this.refreshLyricsCacheUI();
+      });
+    });
     this.listen(this.query('#channel-button'), 'click', () => this.changeChannel());
     this.listen(this.query('#find-song'), 'click', () => this.songPicker.open());
     this.listen(this.query('#power-button'), 'click', () => this.togglePower());
@@ -174,9 +186,32 @@ export class App {
   }
   private openSettings(open: boolean): void {
     this.query('#settings').hidden = !open;
+    if (open) void this.refreshLyricsCacheUI();
     if (this.scene) this.scene.interactionEnabled = !open;
     this.query('main').inert = open;
     (open ? this.query('#close-settings') : this.query('#channel-button')).focus({ preventScroll: true });
+  }
+  private async refreshLyricsCacheUI(): Promise<void> {
+    const container = this.query('#lyrics-cache-list');
+    const items = await lyricsCache.list();
+    container.replaceChildren();
+    if (!items.length) {
+      const empty = document.createElement('p'); empty.className = 'lyric-cache-empty'; empty.textContent = 'No saved lyric entries yet.'; container.append(empty);
+      return;
+    }
+    for (const item of items) {
+      const row = document.createElement('div'); row.className = 'lyric-cache-item';
+      const details = document.createElement('div');
+      const title = document.createElement('strong'); title.textContent = item.title;
+      const metadata = document.createElement('span');
+      const remaining = Math.max(0, Math.ceil((item.expiresAt - Date.now()) / 86400000));
+      metadata.textContent = `${item.artist} · ${item.playCount} plays (${item.playsLast30Days} in 30 days) · ${item.retentionDays}-day retention · expires in ${remaining} days`;
+      details.append(title, metadata);
+      const remove = document.createElement('button'); remove.type = 'button'; remove.textContent = 'Remove';
+      remove.dataset.removeCacheSong = item.songKey; remove.setAttribute('aria-label', `Remove ${item.title} from lyric cache`);
+      row.append(details, remove); container.append(row);
+    }
+    this.query('#lyrics-cache-status').textContent = `${items.length} cached song${items.length === 1 ? '' : 's'} · retention adapts to recent listening.`;
   }
   private saveSettings(): void { this.settingsSync?.changed({ version: 1, config: this.config, lyricsKey: this.lyricsKey, customEffects: this.customEffects.snapshot() }); }
   private togglePower(): void { this.powered = !this.powered; this.root.dataset.powered = String(this.powered); this.query('#power-button').setAttribute('aria-pressed', String(this.powered)); this.applyConfig(); }
