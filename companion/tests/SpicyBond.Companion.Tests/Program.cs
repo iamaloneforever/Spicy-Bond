@@ -320,6 +320,14 @@ using (var http = new HttpClient())
         Check(!body.Contains("cover"), "clock polls avoid retransmitting cover artwork");
         Check(response.Headers.GetValues("Access-Control-Allow-Origin").Single() == "https://iamaloneforever.github.io", "HTTP allows only matching origin");
     }
+    using (var eventRequest = new HttpRequestMessage(HttpMethod.Get, $"http://127.0.0.1:{testPort}/playback-events"))
+    {
+        eventRequest.Headers.Add("Origin", "https://iamaloneforever.github.io"); eventRequest.Headers.Add("X-RetroWave-Key", "fixture-token");
+        using var response = await http.SendAsync(eventRequest, HttpCompletionOption.ResponseHeadersRead);
+        using var reader = new StreamReader(await response.Content.ReadAsStreamAsync());
+        var firstEvent = await reader.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(3));
+        Check(response.IsSuccessStatusCode && response.Content.Headers.ContentType?.MediaType == "text/event-stream" && firstEvent?.StartsWith("data: ", StringComparison.Ordinal) == true && (firstEvent?.Contains(bridgeTrackKey) ?? false), "paired wallpaper receives an immediate playback event stream snapshot");
+    }
     using (var response = await Request("https://evil.example")) Check(response.StatusCode == HttpStatusCode.Forbidden, "foreign HTTP origin rejected");
     using (var response = await Request(null)) Check(response.StatusCode == HttpStatusCode.Forbidden, "originless HTTP requests rejected");
     using (var response = await Request("https://iamaloneforever.github.io", host: "evil.example")) Check(response.StatusCode == HttpStatusCode.Forbidden, "HTTP rebinding rejected");
