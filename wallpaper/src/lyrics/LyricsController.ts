@@ -95,8 +95,8 @@ export class LyricsController {
     if (!needsPlayback) { this.stream?.abort(); this.stream = null; this.playback = null; this.legacyBridge = false; this.nextPoll = 0; }
     else if (!this.stream && !this.legacyBridge && now >= this.nextRetry) { this.stream = new AbortController(); void this.receive(track, this.generation, this.stream); }
     this.onContext?.(this.song, this.playback, this.enabled, this.allowPublic, !!this.lyrics);
+    if (track && this.legacyBridge && now >= this.nextPoll && !this.pending) { this.nextPoll = now + 1000; void this.pollLegacy(track, this.generation); }
     if (!enabled || !track) { this.setVisible(false); return; }
-    if (this.legacyBridge && now >= this.nextPoll && !this.pending) { this.nextPoll = now + 1000; void this.pollLegacy(track, this.generation); }
     if (!this.playback || !this.lyrics || now - this.received > 3500) { this.setVisible(false); return; }
     this.lastPosition = lyricPosition(this.playback, this.received, now, this.appearance.lyricOffset);
     if (this.rendered !== this.lyrics) {
