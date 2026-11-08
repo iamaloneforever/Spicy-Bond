@@ -67,8 +67,8 @@ public sealed class LoopbackServer(string token, int port = LoopbackServer.Port,
                 if (allowed && authenticated && valid && playbackEvents && request[0] == "GET")
                 {
                     timeout.CancelAfter(Timeout.Infinite);
-                    var cors = $"Access-Control-Allow-Origin: {headers["Origin"]}\r\nAccess-Control-Allow-Private-Network: true\r\nVary: Origin\r\n";
-                    await stream.WriteAsync(Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\n{cors}Content-Type: text/event-stream; charset=utf-8\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: keep-alive\r\n\r\n"), timeout.Token);
+                    var streamCors = $"Access-Control-Allow-Origin: {headers["Origin"]}\r\nAccess-Control-Allow-Private-Network: true\r\nVary: Origin\r\n";
+                    await stream.WriteAsync(Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\n{streamCors}Content-Type: text/event-stream; charset=utf-8\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: keep-alive\r\n\r\n"), timeout.Token);
                     await stream.FlushAsync(timeout.Token);
                     PlaybackSnapshot? previous = null;
                     long sentAt = 0;
