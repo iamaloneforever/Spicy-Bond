@@ -25,7 +25,16 @@ export type EffectLayer = Record<LayerParameter, Signal> & {
 export interface CustomEffect {
   id: string; name: string; enabled: boolean;
   match: { titles: string[]; artists: string[]; album?: string; versions: 'ignore' | 'exact' };
-  replace: boolean; duration: number; layers?: EffectLayer[]; shader?: string;
+  replace: boolean; duration: number; layers?: EffectLayer[]; shader?: string; timeline?: ShaderTimeline;
+}
+export interface ShaderCue {
+  begin: number; end: number; shader: string;
+  transition: { duration: number; easing: 'linear' | 'smooth' };
+}
+export interface ShaderTimeline {
+  clock: 'playback' | 'elapsed';
+  shaders: { id: string; shader: string }[];
+  cues: ShaderCue[];
 }
 export interface EffectFile { version: 1; effects: CustomEffect[] }
 export interface CustomEffectSettings { overlay?: boolean; enabled: boolean; file: EffectFile }
@@ -105,6 +114,58 @@ function layer(value: unknown, path: string): EffectLayer {
   }
   return result;
 }
+function timestamp(value: unknown, path: string): number {
+  if (typeof value === 'string' && /^\d{2}:[0-5]\d:[0-5]\d(?:\.\d{1,3})?$/.test(value)) {
+    const [hours, minutes, seconds] = value.split(':').map(Number);
+    return number(hours * 3600 + minutes * 60 + seconds, path, 0, 86400);
+  }
+  return number(value, path, 0, 86400);
+}
+function timeline(value: unknown, path: string): ShaderTimeline {
+  const row = object(value, path, ['clock', 'shaders', 'cues']);
+  if (!Array.isArray(row.shaders) || !row.shaders.length || row.shaders.length > 16) fail(`${path}.shaders`, 'expected 1–16 shaders');
+  const ids = new Set<string>();
+  const shaders = (row.shaders as unknown[]).map((value, index) => {
+    const p = `${path}.shaders[${index}]`, shader = object(value, p, ['id', 'shader']);
+    const id = string(shader.id, `${p}.id`, 64);
+    if (!/^[a-z0-9][a-z0-9_-]*$/.test(id) || ids.has(id)) fail(`${p}.id`, 'expected a unique lowercase shader ID');
+    ids.add(id);
+    return { id, shader: string(shader.shader, `${p}.shader`, 32768) };
+  });
+  if (!Array.isArray(row.cues) || !row.cues.length || row.cues.length > 256) fail(`${path}.cues`, 'expected 1–256 cues');
+  let previousEnd = 0;
+  const cues = (row.cues as unknown[]).map((value, index): ShaderCue => {
+    const p = `${path}.cues[${index}]`, cue = object(value, p, ['begin', 'end', 'shader', 'transition']);
+    const begin = timestamp(cue.begin, `${p}.begin`), end = timestamp(cue.end, `${p}.end`);
+    if (end <= begin || begin < previousEnd) fail(p, 'cues must be ordered, non-overlapping and end after they begin');
+    previousEnd = end;
+    const shader = string(cue.shader, `${p}.shader`, 64);
+    if (!ids.has(shader)) fail(`${p}.shader`, `unknown shader ID ${shader}`);
+    const transition = cue.transition === undefined ? {} : object(cue.transition, `${p}.transition`, ['duration', 'easing']);
+    return { begin, end, shader, transition: {
+      duration: number(transition.duration ?? Math.min(1, (end - begin) / 2), `${p}.transition.duration`, 0, (end - begin) / 2),
+      easing: choice(transition.easing, `${p}.transition.easing`, ['linear', 'smooth'], 'smooth'),
+    } };
+  });
+  return { clock: choice(row.clock, `${path}.clock`, ['playback', 'elapsed'], 'playback'), shaders, cues };
+}
+
+/** Stateless evaluation makes pauses and forward/backward seeks deterministic. */
+export function evaluateTimeline(timeline: ShaderTimeline, time: number, transitions = true): { cue: ShaderCue; time: number; weight: number }[] {
+  if (!Number.isFinite(time)) return [];
+  const index = timeline.cues.findIndex(cue => time >= cue.begin && time < cue.end);
+  if (index < 0) return [];
+  const cue = timeline.cues[index], previous = timeline.cues[index - 1], next = timeline.cues[index + 1];
+  if (!transitions) return [{ cue, time: time - cue.begin, weight: 1 }];
+  const ease = (value: number) => cue.transition.easing === 'smooth' ? value * value * (3 - 2 * value) : value;
+  const local = time - cue.begin, duration = cue.transition.duration;
+  if (duration && local < duration) {
+    const weight = ease(local / duration);
+    return [...(previous?.end === cue.begin ? [{ cue: previous, time: time - previous.begin, weight: 1 - weight }] : []), { cue, time: local, weight }];
+  }
+  const weight = duration && next?.begin !== cue.end && time > cue.end - duration ? ease((cue.end - time) / duration) : 1;
+  return [{ cue, time: local, weight }];
+}
 export function parseEffectFile(text: string): EffectFile {
   if (new TextEncoder().encode(text).length > maxEffectFileBytes) fail('file', 'maximum size is 512 KiB');
   let value: unknown;
@@ -114,7 +175,7 @@ export function parseEffectFile(text: string): EffectFile {
   if (!Array.isArray(file.effects) || file.effects.length > 64) fail('file.effects', 'expected an array of up to 64 effects');
   const ids = new Set<string>();
   const effects = (file.effects as unknown[]).map((entry, index): CustomEffect => {
-    const path = `effects[${index}]`, row = object(entry, path, ['id', 'name', 'enabled', 'match', 'replace', 'duration', 'layers', 'shader']);
+    const path = `effects[${index}]`, row = object(entry, path, ['id', 'name', 'enabled', 'match', 'replace', 'duration', 'layers', 'shader', 'timeline']);
     const id = string(row.id, `${path}.id`, 64);
     if (!/^[a-z0-9][a-z0-9_-]*$/.test(id)) fail(`${path}.id`, 'use lowercase letters, digits, - or _');
     if (ids.has(id)) fail(`${path}.id`, `duplicate id ${id}`);
@@ -127,8 +188,9 @@ export function parseEffectFile(text: string): EffectFile {
     };
     if (result.match.titles.some(name => !songArtist(name)) || result.match.artists.some(name => !songArtist(name))) fail(`${path}.match`, 'names must contain letters or digits');
     if (match.album !== undefined) result.match.album = string(match.album, `${path}.match.album`);
-    if ((row.layers === undefined) === (row.shader === undefined)) fail(path, 'provide either layers or shader');
-    if (row.shader !== undefined) result.shader = string(row.shader, `${path}.shader`, 32768);
+    if ([row.layers, row.shader, row.timeline].filter(value => value !== undefined).length !== 1) fail(path, 'provide either layers or shader or timeline (exactly one)');
+    if (row.timeline !== undefined) result.timeline = timeline(row.timeline, `${path}.timeline`);
+    else if (row.shader !== undefined) result.shader = string(row.shader, `${path}.shader`, 32768);
     else {
       if (!Array.isArray(row.layers) || !row.layers.length || row.layers.length > 16) fail(`${path}.layers`, 'expected 1–16 layers');
       result.layers = (row.layers as unknown[]).map((entry, i) => layer(entry, `${path}.layers[${i}]`));
@@ -177,5 +239,24 @@ export function starterEffect(track: Track | null): EffectFile {
       { type: 'particles', color: 'accent', count: 48, size: .004, speed: .08, opacity: { value: .35, audio: 'treble', amount: .5 } },
       { type: 'waves', color: '#56dfff', y: .2, size: .04, thickness: .002, opacity: .45, speed: .2, count: 5 },
     ],
+  }] }));
+}
+
+export function starterShaderTimeline(track: Track | null): EffectFile {
+  return parseEffectFile(JSON.stringify({ version: 1, effects: [{
+    id: 'my-shader-timeline', name: 'Timed shader morph',
+    match: { titles: [track?.title || 'Your song title'], artists: [track?.artist || track?.albumArtist || 'Your artist'] },
+    timeline: {
+      clock: 'playback',
+      shaders: [
+        { id: 'orbit', shader: 'vec4 effect(vec2 uv){vec2 p=(uv-.5)*vec2(uResolution.x/uResolution.y,1.);float glow=exp(-abs(length(p)-(.22+.02*sin(uTime)))*70.);return vec4(uAccent,glow*.8);}' },
+        { id: 'ribbon', shader: 'vec4 effect(vec2 uv){float wave=.5+.14*sin(uv.x*9.+uTime);float glow=exp(-abs(uv.y-wave)*45.);return vec4(uThird,glow*.8);}' },
+      ],
+      cues: [
+        { begin: '00:00:00.000', end: '00:00:10.000', shader: 'orbit', transition: { duration: 2, easing: 'smooth' } },
+        { begin: '00:00:10.000', end: '00:00:20.000', shader: 'ribbon', transition: { duration: 2, easing: 'smooth' } },
+        { begin: '00:00:20.000', end: '00:00:30.000', shader: 'orbit', transition: { duration: 2, easing: 'smooth' } },
+      ],
+    },
   }] }));
 }

@@ -17,7 +17,8 @@
   <li>Use <strong>Import effect file</strong>. Your effect activates for matching songs. <strong>Preview</strong> tries any saved effect on the current song, including a disabled entry.</li>
   <li>Edit and reimport to update it. Keep the same <code>id</code> to replace that entry; use a new ID to add another.</li>
 </ol>
-<p><a href="neon-orbit.json" download>Download layered neon orbit</a> · <a href="aurora-shader.json" download>Download GLSL aurora</a> · <a href="effect.schema.json" download>Download editor schema</a></p>
+<p><a href="neon-orbit.json" download>Download layered neon orbit</a> · <a href="aurora-shader.json" download>Download GLSL aurora</a> · <a href="shader-timeline.json" download>Download timed shader morph</a> · <a href="effect.schema.json" download>Download editor schema</a></p>
+<p><a href="frank-sinatra-over-and-over.json" download>Download The World We Knew (Over And Over) — Frank Sinatra</a>: eight sections of amber spotlights, flowing ribbons, echoing rings and midnight stars, ending at 2:47.053 with a six-second fade. This is an authored visual arrangement for <a href="https://open.spotify.com/track/62KZRwymXq9Rgm8Cm5UCfx">the linked recording</a>, with subtle live audio reactivity. Cue changes are not a beat or lyric transcription.</p>
 <p class="note">Lively blocks browser downloads. Download/Export opens the updated paired companion’s Windows Save As dialog. Choose a folder and filename, or Cancel without saving. The panel confirms the saved path; it does not show a JSON preview.</p>
 <p class="note">The paired companion saves the library and enable state in wallpaper-settings.json, with browser storage as an offline cache. Update the companion to enable this; without pairing, effects remain in this browser or Lively profile. Export your library to back it up or share it. Editing the original file takes effect after reimporting. Invalid imports keep the saved library and active effect.</p>
 <h2>A minimal effect</h2>
@@ -36,7 +37,7 @@
     }]
   }]
 }</code></pre>
-<p>Files contain one or more effects. Each needs a unique <code>id</code>, a display <code>name</code>, a <code>match</code>, and either <code>layers</code> or <code>shader</code>. Set <code>"enabled": false</code> to store an effect without automatically activating it.</p>
+<p>Files contain one or more effects. Each needs a unique <code>id</code>, a display <code>name</code>, a <code>match</code>, and exactly one of <code>layers</code>, <code>shader</code> or <code>timeline</code>. Set <code>"enabled": false</code> to store an effect without automatically activating it.</p>
 <h2>Choose when it plays</h2>
 <p>Both title and artist must match. Names ignore case, accents and punctuation, while keeping complete names: “My Artist Tribute” does not match “My Artist”. Add aliases to the <code>titles</code> and <code>artists</code> arrays. Any title plus any artist in those arrays qualifies. Complete artist credits in collaborations are supported; album artist is used only when artist is empty.</p>
 <p>Common remaster, live, remix and other version suffixes are ignored by default. Set <code>"versions": "exact"</code> inside <code>match</code> to retain version text. Add <code>"album": "Album name"</code> there to restrict the release. The last matching library entry wins. Reimporting an ID moves it to the end.</p>
@@ -100,6 +101,26 @@
 <tr><td><code>vec3 uPrimary, uAccent, uThird</code></td><td>Linear album palette colors</td></tr>
 </table>
 <p>Helpers <code>PI</code> and <code>hash(float)</code> are supplied. Brightness, transition opacity and lyric dimming are applied to the returned alpha. Custom shaders do not execute JavaScript or load external assets. Keep GPU work bounded: shader compilation catches syntax errors but cannot estimate the runtime cost of arbitrary shader code. Reduced motion freezes the supplied time and audio inputs; a shader should use those inputs for all animation.</p>
+<h2>Schedule several shaders in one file</h2>
+<p>Choose <strong>Download timed shader starter</strong> in settings for an example matched to the current song. Replace an effect’s <code>layers</code> or <code>shader</code> with <code>timeline</code>. Keep all shader definitions and their cues in the same JSON file:</p>
+<pre><code>"timeline": {
+  "clock": "playback",
+  "shaders": [
+    { "id": "warm", "shader": "vec4 effect(vec2 uv){return vec4(uPrimary,0.5);}" },
+    { "id": "cool", "shader": "vec4 effect(vec2 uv){return vec4(uAccent,0.5);}" }
+  ],
+  "cues": [
+    { "begin": "00:00:00.000", "end": "00:00:10.000", "shader": "warm",
+      "transition": { "duration": 2, "easing": "smooth" } },
+    { "begin": "00:00:10.000", "end": "00:00:25.000", "shader": "cool",
+      "transition": { "duration": 2, "easing": "smooth" } }
+  ]
+}</code></pre>
+<p><code>begin</code> and <code>end</code> accept seconds (including decimals) or <code>HH:MM:SS.mmm</code> timestamps, similar to TTML timing. This is a JSON effect format, not TTML XML. Cue intervals include begin and exclude end. Arrange them in time order without overlaps; transparent gaps are allowed. Reuse any shader ID across multiple cues. Export normalizes timestamps to seconds. The timeline ends after its final cue and does not loop.</p>
+<p>A cue’s transition begins at its <code>begin</code>. Adjacent cues blend the previous shader into the next over <code>duration</code> seconds. Each shader keeps its own local time while blending. At gaps and the end, the outgoing cue fades to transparent over its own transition duration; a cue after a gap fades in from transparent. Duration defaults to the smaller of 1 second or half the cue length; it must be between zero and half the cue length. Set zero for a cut. Easing is <code>smooth</code> (smoothstep) or <code>linear</code>. Colors and alpha blend together in linear premultiplied space, preserving brightness through a crossfade. This morphs between rendered images; animate geometry within your shader for a shape transformation.</p>
+<p>The default <code>clock: "playback"</code> follows fresh matching companion snapshots, including pause, playback rate and forward/backward seeks. It works with lyrics disabled and does not use the lyric offset or Background animation intensity. When timing is unavailable, it falls back to elapsed active effect seconds. <strong>Preview</strong> always starts at zero with elapsed time. Choose <code>clock: "elapsed"</code> to use elapsed time explicitly. Recording changes and preview restarts reset the elapsed clock. Reduced motion and Background animation off freeze the clock and audio, and select the current cue without fading; Lively pause/hidden windows suspend rendering.</p>
+<p>Timeline shaders receive the usual uniforms. <code>uTime</code> is seconds since that cue began; it continues for an outgoing cue while blending. <code>uProgress</code> is its local time divided by cue length, clamped to 1. <code>uSongTime</code> is the timeline clock in seconds. In ordinary single-shader effects, <code>uSongTime</code> equals elapsed animation time. Use these supplied values for animation so motion controls can freeze it.</p>
+<p>A timeline supports 1–16 shader definitions and 1–256 cues. All shader IDs must be unique and every cue must reference one. Every shader compiles before saving, including definitions that no cue uses. Import/export, preview, matching and companion persistence work just as for other effects.</p>
 <h2>Validation and limits</h2>
 <p>Files and saved libraries are limited to 512 KiB, with up to 64 effects, 16 layers per effect, 512 combined particles per effect, 128 keyframes per parameter, and 32 title/artist aliases per match. Shader strings allow 32768 characters. Periods, duration and keyframe times go up to 86400 seconds. Oscillation phase, amplitude and audio amount range from −36000 to 36000. Unknown fields, out-of-range numbers and duplicate IDs in a file produce a field-specific error.</p>
 <p>All imported shaders and generated layer programs compile on the current GPU before the library is saved. If any effect fails, the entire import is rejected. WebGL 2 is required. Performance presets and low power mode cap the shared renderer's pixel ratio and frame rate; use fewer layers and particles for lower GPU cost. At most two custom compositions exist during a crossfade.</p>

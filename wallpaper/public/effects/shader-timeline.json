@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "effects": [
+    {
+      "id": "my-shader-timeline",
+      "name": "Timed shader morph",
+      "enabled": true,
+      "match": {
+        "titles": [
+          "Your song title"
+        ],
+        "artists": [
+          "Your artist"
+        ],
+        "versions": "ignore"
+      },
+      "replace": false,
+      "duration": 12,
+      "timeline": {
+        "clock": "playback",
+        "shaders": [
+          {
+            "id": "orbit",
+            "shader": "vec4 effect(vec2 uv){vec2 p=(uv-.5)*vec2(uResolution.x/uResolution.y,1.);float glow=exp(-abs(length(p)-(.22+.02*sin(uTime)))*70.);return vec4(uAccent,glow*.8);}"
+          },
+          {
+            "id": "ribbon",
+            "shader": "vec4 effect(vec2 uv){float wave=.5+.14*sin(uv.x*9.+uTime);float glow=exp(-abs(uv.y-wave)*45.);return vec4(uThird,glow*.8);}"
+          }
+        ],
+        "cues": [
+          {
+            "begin": 0,
+            "end": 10,
+            "shader": "orbit",
+            "transition": {
+              "duration": 2,
+              "easing": "smooth"
+            }
+          },
+          {
+            "begin": 10,
+            "end": 20,
+            "shader": "ribbon",
+            "transition": {
+              "duration": 2,
+              "easing": "smooth"
+            }
+          },
+          {
+            "begin": 20,
+            "end": 30,
+            "shader": "orbit",
+            "transition": {
+              "duration": 2,
+              "easing": "smooth"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "$schema": "./effect.schema.json"
+}

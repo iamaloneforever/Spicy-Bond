@@ -1,20 +1,25 @@
 import { expect, test } from '@playwright/test';
 import { active, cover, fixture, start } from './lyric-fixtures';
 
-for (const viewport of [{ width: 1280, height: 720 }, { width: 800, height: 600 }]) {
-  test(`45% lyrics box stays above the TV at ${viewport.width}px`, async ({ page }) => {
-    await page.setViewportSize(viewport); await start(page);
-    await expect(page.locator(active)).toBeVisible();
-    const box = (await page.locator('#lyrics').boundingBox())!;
-    const scene = (await page.locator('.tv-viewport').boundingBox())!;
-    expect(box.height).toBeCloseTo(viewport.height * 0.45, 0);
-    expect(box.y + box.height).toBeLessThan(scene.y);
-    await expect.poll(() => page.locator('.scene canvas').evaluate(el => el.clientHeight)).toBe(viewport.height);
-    await page.keyboard.press('s'); await page.locator('[data-setting=lyrics]').uncheck();
-    await expect.poll(() => page.locator('.tv-viewport').evaluate(el => el.getBoundingClientRect().top)).toBe(0);
-    await expect.poll(() => page.locator('.tv-viewport').evaluate(el => el.clientHeight)).toBeGreaterThan(scene.height);
-  });
-}
+test.describe('lyrics layout', () => {
+  // Preserve CSS viewport dimensions while bounding the software-WebGL buffer.
+  // Full-density rendering has separate visual and graphics coverage.
+  test.use({ deviceScaleFactor: .5 });
+  for (const viewport of [{ width: 1280, height: 720 }, { width: 800, height: 600 }]) {
+    test(`45% lyrics box stays above the TV at ${viewport.width}px`, async ({ page }) => {
+      await page.setViewportSize(viewport); await start(page);
+      await expect(page.locator(active)).toBeVisible();
+      const box = (await page.locator('#lyrics').boundingBox())!;
+      const scene = (await page.locator('.tv-viewport').boundingBox())!;
+      expect(box.height).toBeCloseTo(viewport.height * 0.45, 0);
+      expect(box.y + box.height).toBeLessThan(scene.y);
+      await expect.poll(() => page.locator('.scene canvas').evaluate(el => el.clientHeight)).toBe(viewport.height);
+      await page.keyboard.press('s'); await page.locator('[data-setting=lyrics]').uncheck();
+      await expect.poll(() => page.locator('.tv-viewport').evaluate(el => el.getBoundingClientRect().top)).toBe(0);
+      await expect.poll(() => page.locator('.tv-viewport').evaluate(el => el.clientHeight)).toBeGreaterThan(scene.height);
+    });
+  }
+});
 
 test('the complete upstream renderer supplies its spring, letter and virtualized scrolling behavior', async ({ page }) => {
   const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));

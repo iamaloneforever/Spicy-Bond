@@ -248,8 +248,11 @@ export class App {
     }
     if (this.scene) this.scene.theme = theme.id;
     if (this.demo) this.lyrics.tickDemo(now, this.demoIndex, this.demoStarted, this.config.lyrics && this.powered);
-    else this.lyrics.tick(now, this.store.track, this.config.lyrics && this.powered, this.config.publicLyrics);
-    if (this.scene) this.scene.lyricsVisible = this.lyrics.visible;
+    else this.lyrics.tick(now, this.store.track, this.config.lyrics && this.powered, this.config.publicLyrics, this.powered && this.scene?.customEffect?.timeline?.clock === 'playback' && !this.customEffects.previewing);
+    if (this.scene) {
+      this.scene.lyricsVisible = this.lyrics.visible;
+      this.scene.effectPlaybackTime = this.customEffects.previewing ? null : this.demo ? Math.max(0, (now - this.demoStarted) / 1000) : this.lyrics.playbackTime(now);
+    }
     if (this.demo && this.powered) {
       this.audio.update(demoSpectrum(time, this.demoBass, this.demoTreble), now);
       if (now > this.nextTrackTime) { this.demoIndex = (this.demoIndex + 1) % demoTracks.length; this.nextDemo(); }

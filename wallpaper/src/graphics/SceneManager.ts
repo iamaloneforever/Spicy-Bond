@@ -19,6 +19,7 @@ export class SceneManager {
   readonly background = new BackgroundEngine();
   readonly customEffects = new CustomEffectRenderer();
   customEffect: CustomEffect | null = null;
+  effectPlaybackTime: number | null = null;
   theme: ThemeId = 'synthwave';
   songAccent: SongAccent | null = null;
   private viewport: HTMLElement;
@@ -137,7 +138,7 @@ export class SceneManager {
     this.renderer.setViewport(0, 0, this.container.clientWidth, this.container.clientHeight);
     this.renderer.clear(true, true, true);
     this.background.render(this.renderer, dt, config, audio, this.theme, reducedMotion, this.lyricsVisible, painter.palette, powered, this.songAccent, !!this.customEffect?.replace);
-    this.customEffects.render(this.renderer, this.customEffect, dt, config, audio, reducedMotion, this.lyricsVisible, painter.palette, powered);
+    this.customEffects.render(this.renderer, this.customEffect, dt, config, audio, reducedMotion, this.lyricsVisible, painter.palette, powered, this.effectPlaybackTime);
     this.renderer.clearDepth();
     this.renderer.setViewport(this.tvViewport);
     this.renderer.render(this.scene, this.camera);

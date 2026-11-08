@@ -1,4 +1,4 @@
-import { effectStorageKey, matchesEffect, maxEffectFileBytes, mergeEffects, parseEffectFile, starterEffect, type CustomEffectSettings, type CustomEffect, type EffectFile } from '../background/CustomEffects';
+import { effectStorageKey, matchesEffect, maxEffectFileBytes, mergeEffects, parseEffectFile, starterEffect, starterShaderTimeline, type CustomEffectSettings, type CustomEffect, type EffectFile } from '../background/CustomEffects';
 import { bridgeHeaders } from '../music/SongSearch';
 import type { Track } from '../lively/types';
 
@@ -6,8 +6,9 @@ export const customEffectsMarkup = `
   <div class="section-label">Custom song effects</div>
   <label class="toggle-row"><span>Enable custom effects</span><input id="custom-effects-enabled" type="checkbox" checked><span class="switch"></span></label>
   <label class="toggle-row"><span>Keep current atmosphere (overlay)</span><input id="custom-effects-overlay" type="checkbox" checked><span class="switch"></span></label>
-  <p class="panel-note">Create a JSON file with layers, animation and audio reactivity, or write your own shader. Download a starter for the current song, edit it, then import it. Reimporting the same ID updates it.</p>
+  <p class="panel-note">Create a JSON file with layers, animation and audio reactivity, or schedule multiple shaders with timed cues and smooth transitions. Download a starter for the current song, edit it, then import it. Reimporting the same ID updates it.</p>
   <button class="outline-button" id="custom-effect-starter">Download starter for current song</button>
+  <button class="outline-button" id="custom-effect-timeline-starter">Download timed shader starter</button>
   <label class="field">Import effect file (.json)<input id="custom-effect-file" type="file" accept=".json,application/json" aria-describedby="custom-effect-feedback"></label>
   <p class="panel-note" id="custom-effect-feedback" role="alert"></p>
   <p class="panel-note" id="custom-effect-status" role="status"></p>
@@ -26,6 +27,7 @@ export class CustomEffectControls {
   private disposed = false;
   private exportRequest: AbortController | null = null;
   private trackIdentity = '';
+  get previewing(): boolean { return this.preview !== null; }
   private query<T extends HTMLElement = HTMLElement>(selector: string): T { return this.root.querySelector<T>(selector)!; }
   constructor(private root: HTMLElement, private getTrack: () => Track | null, private validate: (effects: readonly CustomEffect[]) => void, private select: (effect: CustomEffect | null, restart: boolean) => void, private changed: () => void = () => {}) {
     try {
@@ -48,6 +50,7 @@ export class CustomEffectControls {
     });
     this.listen(this.query('#custom-effect-file'), 'change', () => { void this.importFile(); });
     this.listen(this.query('#custom-effect-starter'), 'click', () => this.download(starterEffect(this.getTrack()), 'my-song-effect.json'));
+    this.listen(this.query('#custom-effect-timeline-starter'), 'click', () => this.download(starterShaderTimeline(this.getTrack()), 'my-shader-timeline.json'));
     this.listen(this.query('#custom-effect-export'), 'click', () => this.download(this.file, 'spicy-bond-effects.json'));
     this.listen(this.query('#custom-effect-stop'), 'click', () => { this.preview = null; this.refresh(); });
     this.listen(this.query('#custom-effect-list'), 'click', event => {

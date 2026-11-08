@@ -1,12 +1,12 @@
 import * as THREE from 'three';
 import type { Config } from '../core/Config';
 import type { AudioEngine } from '../audio/AudioEngine';
-import { evaluateSignal, layerParameters, type CustomEffect, type EffectAudio, type LayerParameter } from './CustomEffects';
+import { evaluateSignal, evaluateTimeline, layerParameters, type CustomEffect, type EffectAudio, type LayerParameter, type ShaderTimeline } from './CustomEffects';
 
 const vertexShader = 'varying vec2 vUv; void main(){vUv=uv;gl_Position=vec4(position.xy,0.,1.);}';
 const header = `
 varying vec2 vUv;
-uniform float uTime, uProgress, uOpacity;
+uniform float uTime, uProgress, uOpacity, uSongTime;
 uniform vec2 uResolution;
 uniform vec3 uBands, uPrimary, uAccent, uThird;
 uniform float uAmplitude, uOnset;
@@ -46,18 +46,17 @@ function layerShader(effect: CustomEffect): string {
   // Compose in premultiplied space, return straight alpha to Three's normal blend.
   return `${declarations.join('\n')}\nvec4 effect(vec2 uv){vec3 c=vec3(0.);float alpha=0.;${operations.join('\n')}return vec4(c/max(alpha,.0001),alpha);}`;
 }
-export function effectFragmentShader(effect: CustomEffect): string {
+export function effectFragmentShader(effect: CustomEffect, raw = false): string {
   return `${header}\n${effect.shader ?? layerShader(effect)}
 void main(){
   vec4 result=effect(vUv);
   gl_FragColor=vec4(max(result.rgb,vec3(0.)),clamp(result.a,0.,1.)*uOpacity);
-  #include <tonemapping_fragment>
-  #include <colorspace_fragment>
+  ${raw ? '' : '#include <tonemapping_fragment>\n#include <colorspace_fragment>'}
 }`;
 }
-function materialFor(effect: CustomEffect): THREE.ShaderMaterial {
+function materialFor(effect: CustomEffect, raw = false): THREE.ShaderMaterial {
   const uniforms: Record<string, THREE.IUniform> = {
-    uTime: { value: 0 }, uProgress: { value: 0 }, uOpacity: { value: 1 }, uResolution: { value: new THREE.Vector2(1, 1) },
+    uTime: { value: 0 }, uProgress: { value: 0 }, uOpacity: { value: 1 }, uSongTime: { value: 0 }, uResolution: { value: new THREE.Vector2(1, 1) },
     uBands: { value: new THREE.Vector3() }, uAmplitude: { value: 0 }, uOnset: { value: 0 },
     uPrimary: { value: new THREE.Color() }, uAccent: { value: new THREE.Color() }, uThird: { value: new THREE.Color() },
   };
@@ -65,15 +64,63 @@ function materialFor(effect: CustomEffect): THREE.ShaderMaterial {
     for (const prefix of ['transform', 'style', 'detail']) uniforms[`${prefix}${i}`] = { value: new THREE.Vector4() };
     uniforms[`color${i}`] = { value: new THREE.Color() };
   });
-  return new THREE.ShaderMaterial({ name: `Custom effect: ${effect.id}`, vertexShader, fragmentShader: effectFragmentShader(effect), uniforms, transparent: true, depthTest: false, depthWrite: false });
+  return new THREE.ShaderMaterial({ name: `Custom effect: ${effect.id}`, vertexShader, fragmentShader: effectFragmentShader(effect, raw), uniforms, transparent: !raw, blending: raw ? THREE.NoBlending : THREE.NormalBlending, depthTest: false, depthWrite: false });
 }
 
-/** Uses the wallpaper's context. At most two quads exist during a transition. */
+/** Separate programs let shaders reuse helper names. Blend linear premultiplied colors once. */
+class TimelineRenderer {
+  readonly material: THREE.ShaderMaterial;
+  private programs = new Map<string, THREE.ShaderMaterial>();
+  private targets = [new THREE.WebGLRenderTarget(1, 1, { depthBuffer: false, type: THREE.HalfFloatType }), new THREE.WebGLRenderTarget(1, 1, { depthBuffer: false, type: THREE.HalfFloatType })];
+  private scene = new THREE.Scene();
+  private camera = new THREE.Camera();
+  private mesh: THREE.Mesh;
+  constructor(private timeline: ShaderTimeline, effect: CustomEffect, geometry: THREE.PlaneGeometry) {
+    for (const shader of timeline.shaders) this.programs.set(shader.id, materialFor({ ...effect, shader: shader.shader, timeline: undefined }, true));
+    this.material = materialFor({ ...effect, timeline: undefined, shader: `
+      uniform sampler2D uFrom, uTo;
+      uniform vec2 uWeights;
+      vec4 effect(vec2 uv) {
+        vec4 a=texture2D(uFrom,uv), b=texture2D(uTo,uv);
+        float alpha=a.a*uWeights.x+b.a*uWeights.y;
+        vec3 color=a.rgb*a.a*uWeights.x+b.rgb*b.a*uWeights.y;
+        return vec4(color/max(alpha,.00001),alpha);
+      }` });
+    Object.assign(this.material.uniforms, { uFrom: { value: this.targets[0].texture }, uTo: { value: this.targets[1].texture }, uWeights: { value: new THREE.Vector2() } });
+    this.mesh = new THREE.Mesh(geometry); this.mesh.frustumCulled = false; this.scene.add(this.mesh);
+  }
+  render(renderer: THREE.WebGLRenderer, time: number, transitions: boolean): void {
+    const samples = evaluateTimeline(this.timeline, time, transitions), u = this.material.uniforms;
+    u.uWeights.value.set(samples[0]?.weight ?? 0, samples[1]?.weight ?? 0);
+    if (!samples.length) return;
+    const target = renderer.getRenderTarget(), viewport = renderer.getViewport(new THREE.Vector4());
+    const scissor = renderer.getScissor(new THREE.Vector4()), scissorTest = renderer.getScissorTest();
+    try {
+      renderer.setScissorTest(false);
+      samples.forEach((sample, index) => {
+        const program = this.programs.get(sample.cue.shader)!, buffer = this.targets[index];
+        // Copy shared inputs; each cue has its own local time and one-shot progress.
+        for (const key of Object.keys(u)) if (program.uniforms[key] && !['uTime', 'uProgress', 'uOpacity', 'uSongTime'].includes(key)) program.uniforms[key].value = u[key].value;
+        program.uniforms.uTime.value = sample.time; program.uniforms.uSongTime.value = time;
+        program.uniforms.uProgress.value = Math.min(1, sample.time / (sample.cue.end - sample.cue.begin));
+        program.uniforms.uOpacity.value = 1;
+        buffer.setSize(u.uResolution.value.x, u.uResolution.value.y);
+        this.mesh.material = program;
+        renderer.setRenderTarget(buffer); renderer.render(this.scene, this.camera);
+      });
+    } finally {
+      renderer.setRenderTarget(target); renderer.setViewport(viewport); renderer.setScissor(scissor); renderer.setScissorTest(scissorTest);
+    }
+  }
+  dispose(): void { this.programs.forEach(program => program.dispose()); this.targets.forEach(target => target.dispose()); this.scene.clear(); }
+}
+
+/** Uses the wallpaper's context. At most two output compositions crossfade. */
 export class CustomEffectRenderer {
   private scene = new THREE.Scene();
   private camera = new THREE.Camera();
   private geometry = new THREE.PlaneGeometry(2, 2);
-  private entries: { effect: CustomEffect; material: THREE.ShaderMaterial; mesh: THREE.Mesh; time: number; opacity: number }[] = [];
+  private entries: { effect: CustomEffect; material: THREE.ShaderMaterial; mesh: THREE.Mesh; time: number; elapsed: number; timelineTime: number; opacity: number; timeline?: TimelineRenderer }[] = [];
   private selected: CustomEffect | null = null;
   private audio: EffectAudio = { bass: 0, mid: 0, treble: 0, amplitude: 0, onset: 0 };
 
@@ -86,7 +133,7 @@ export class CustomEffectRenderer {
       error = [gl.getShaderInfoLog(fragment), gl.getShaderInfoLog(vertex), gl.getProgramInfoLog(program)].filter(Boolean).join('\n').slice(0, 2000) || 'The graphics driver rejected this shader.';
     };
     try {
-      for (const effect of effects) {
+      for (const effect of effects.flatMap(effect => effect.timeline ? effect.timeline.shaders.map(shader => ({ ...effect, timeline: undefined, shader: shader.shader, name: `${effect.name} / ${shader.id}` })) : [effect])) {
         const material = materialFor(effect), scene = new THREE.Scene();
         const mesh = new THREE.Mesh(this.geometry, material); mesh.frustumCulled = false; scene.add(mesh);
         try {
@@ -100,18 +147,19 @@ export class CustomEffectRenderer {
     } finally { renderer.debug.onShaderError = previous; renderer.debug.checkShaderErrors = check; }
   }
 
-  restart(): void { for (const entry of this.entries) entry.time = 0; }
+  restart(): void { for (const entry of this.entries) entry.time = entry.elapsed = entry.timelineTime = 0; }
 
-  render(renderer: THREE.WebGLRenderer, effect: CustomEffect | null, dt: number, config: Config, audio: AudioEngine, reduced: boolean, lyrics: boolean, palette: readonly string[], powered: boolean): void {
+  render(renderer: THREE.WebGLRenderer, effect: CustomEffect | null, dt: number, config: Config, audio: AudioEngine, reduced: boolean, lyrics: boolean, palette: readonly string[], powered: boolean, playbackTime: number | null = null): void {
     if (!powered) effect = null;
     if (effect !== this.selected) {
       this.selected = effect;
       // Drop the oldest fading quad when a new selection interrupts a transition.
       while (this.entries.length > 1) this.remove(this.entries[0]);
       if (effect) {
-        const material = materialFor(effect), mesh = new THREE.Mesh(this.geometry, material);
+        const timeline = effect.timeline ? new TimelineRenderer(effect.timeline, effect, this.geometry) : undefined;
+        const material = timeline?.material ?? materialFor(effect), mesh = new THREE.Mesh(this.geometry, material);
         mesh.frustumCulled = false; this.scene.add(mesh);
-        this.entries.push({ effect, material, mesh, time: 0, opacity: 0 });
+        this.entries.push({ effect, material, mesh, time: 0, elapsed: 0, timelineTime: 0, opacity: 0, timeline });
       }
     }
     const moving = config.backgroundAnimation && !reduced && powered;
@@ -123,9 +171,13 @@ export class CustomEffectRenderer {
       const target = entry.effect === effect && powered ? 1 : 0;
       entry.opacity = THREE.MathUtils.clamp(entry.opacity + (target ? step : -step), 0, 1);
       if (!target && entry.opacity === 0) { this.remove(entry); continue; }
-      if (moving) entry.time += dt * config.backgroundIntensity;
+      if (moving) {
+        entry.time += dt * config.backgroundIntensity; entry.elapsed += dt;
+        entry.timelineTime = entry.effect.timeline?.clock === 'playback' ? playbackTime ?? entry.elapsed : entry.elapsed;
+      }
       const u = entry.material.uniforms;
       u.uTime.value = entry.time; u.uProgress.value = entry.time % entry.effect.duration / entry.effect.duration;
+      u.uSongTime.value = entry.timeline ? entry.timelineTime : entry.time;
       u.uOpacity.value = entry.opacity * config.backgroundBrightness * (lyrics ? .45 : 1);
       renderer.getDrawingBufferSize(u.uResolution.value);
       u.uBands.value.set(this.audio.bass, this.audio.mid, this.audio.treble); u.uAmplitude.value = this.audio.amplitude; u.uOnset.value = this.audio.onset;
@@ -138,11 +190,12 @@ export class CustomEffectRenderer {
         const color = layer.color === 'primary' ? palette[0] : layer.color === 'accent' ? palette[1] : layer.color === 'third' ? palette[2] : layer.color;
         u[`color${i}`].value.set(color || '#ffffff');
       });
+      entry.timeline?.render(renderer, entry.timelineTime, !reduced && config.backgroundAnimation);
     }
     if (this.entries.length) renderer.render(this.scene, this.camera);
   }
   private remove(entry: typeof this.entries[number]): void {
-    this.scene.remove(entry.mesh); entry.material.dispose(); this.entries.splice(this.entries.indexOf(entry), 1);
+    this.scene.remove(entry.mesh); entry.timeline?.dispose(); entry.material.dispose(); this.entries.splice(this.entries.indexOf(entry), 1);
   }
   dispose(): void { for (const entry of [...this.entries]) this.remove(entry); this.geometry.dispose(); this.scene.clear(); }
 }

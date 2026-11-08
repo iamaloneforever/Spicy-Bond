@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "SpicyBond custom song effects v1",
-  "description": "Import this JSON file in SpicyBond settings. Runtime validation also enforces parameter ranges, strictly increasing keyframes and a combined 512-particle budget.",
+  "description": "Import this JSON file in SpicyBond settings. Runtime validation also enforces parameter ranges, ordered non-overlapping cues, shader references, transition lengths, strictly increasing keyframes and a combined 512-particle budget.",
   "type": "object",
   "additionalProperties": false,
   "required": ["version", "effects"],
@@ -53,9 +53,114 @@
         "speed": { "$ref": "#/$defs/signal", "default": 0.1, "description": "-10 to 10. Negative reverses motion." }
       }
     },
+    "timestamp": {
+      "oneOf": [
+        {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 86400
+        },
+        {
+          "type": "string",
+          "pattern": "^\\d{2}:[0-5]\\d:[0-5]\\d(?:\\.\\d{1,3})?$"
+        }
+      ],
+      "description": "Seconds or HH:MM:SS.mmm (up to 86400 seconds)."
+    },
+    "timeline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "shaders",
+        "cues"
+      ],
+      "properties": {
+        "clock": {
+          "enum": [
+            "playback",
+            "elapsed"
+          ],
+          "default": "playback",
+          "description": "Playback follows companion timing and seeks; elapsed uses unscaled active effect seconds. Preview always uses elapsed time."
+        },
+        "shaders": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "shader"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9_-]*$",
+                "maxLength": 64
+              },
+              "shader": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 32768,
+                "description": "GLSL defining vec4 effect(vec2 uv). No main() or #version. See guide for provided uniforms."
+              }
+            }
+          }
+        },
+        "cues": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "begin",
+              "end",
+              "shader"
+            ],
+            "properties": {
+              "begin": {
+                "$ref": "#/$defs/timestamp"
+              },
+              "end": {
+                "$ref": "#/$defs/timestamp"
+              },
+              "shader": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "description": "ID of a shader in this timeline."
+              },
+              "transition": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "duration": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 43200,
+                    "description": "Seconds, at most half this cue length. Default is min(1, half cue length). Zero cuts immediately."
+                  },
+                  "easing": {
+                    "enum": [
+                      "linear",
+                      "smooth"
+                    ],
+                    "default": "smooth"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "effect": {
       "type": "object", "additionalProperties": false, "required": ["id", "name", "match"],
-      "oneOf": [{ "required": ["layers"], "not": { "required": ["shader"] } }, { "required": ["shader"], "not": { "required": ["layers"] } }],
+      "oneOf": [{"required": ["layers"], "not": {"anyOf": [{"required": ["shader"]}, {"required": ["timeline"]}]}}, {"required": ["shader"], "not": {"anyOf": [{"required": ["layers"]}, {"required": ["timeline"]}]}}, {"required": ["timeline"], "not": {"anyOf": [{"required": ["layers"]}, {"required": ["shader"]}]}}],
       "properties": {
         "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$", "maxLength": 64 },
         "name": { "type": "string", "minLength": 1, "maxLength": 256 },
@@ -72,6 +177,7 @@
           }
         },
         "layers": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "$ref": "#/$defs/layer" } },
+        "timeline": { "$ref": "#/$defs/timeline" },
         "shader": { "type": "string", "minLength": 1, "maxLength": 32768, "description": "GLSL defining vec4 effect(vec2 uv). No main() or #version. See guide for provided uniforms." }
       }
     }

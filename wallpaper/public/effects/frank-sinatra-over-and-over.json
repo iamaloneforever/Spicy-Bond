@@ -1,0 +1,118 @@
+{
+  "$schema": "./effect.schema.json",
+  "version": 1,
+  "effects": [
+    {
+      "id": "frank-sinatra-over-and-over",
+      "name": "The World We Knew — Afterglow",
+      "enabled": true,
+      "match": {
+        "titles": [
+          "The World We Knew (Over And Over)",
+          "The World We Knew",
+          "Over And Over"
+        ],
+        "artists": [
+          "Frank Sinatra"
+        ],
+        "versions": "ignore"
+      },
+      "replace": false,
+      "timeline": {
+        "clock": "playback",
+        "shaders": [
+          {
+            "id": "amber-room",
+            "shader": "vec4 effect(vec2 uv) {\n  float t = uSongTime;\n  vec2 p = (uv - .5) * vec2(uResolution.x / max(uResolution.y, 1.), 1.);\n  float music = clamp(uAmplitude * .12 + uBands.x * .08, 0., .12);\n  float beams = exp(-pow((p.x + .48 + .09 * sin(t * .055)) / (.16 + uv.y * .18), 2.))\n              + .7 * exp(-pow((p.x - .55 + .07 * cos(t * .047)) / (.15 + uv.y * .15), 2.));\n  vec3 light = vec3(.84, .36, .075) * beams * (.055 + music * .08);\n  float alpha = beams * .045;\n  for (int i = 0; i < 18; i++) {\n    float f = float(i) + 1.;\n    vec2 center = vec2((hash(f * 7.) - .5) * 2.6, hash(f * 13.) - .5);\n    center += vec2(sin(t * .045 + f) * .035, sin(t * .035 + f * 2.) * .055);\n    float radius = .012 + hash(f * 23.) * .035;\n    float d = length(p - center);\n    float mote = exp(-d * d / (radius * radius)) * (.055 + .035 * sin(t * .22 + f));\n    light += mix(vec3(.45, .17, .035), vec3(1., .72, .30), hash(f * 31.)) * mote;\n    alpha += mote * .6;\n  }\n  float quietCenter = 1. - .65 * exp(-dot(p * vec2(1.4, 1.8), p * vec2(1.4, 1.8)) * 5.);\n  light *= quietCenter * 2.4;\n  alpha = clamp(alpha * quietCenter * 2.4, 0., .5);\n  return vec4(light / max(alpha, .001), alpha);\n}"
+          },
+          {
+            "id": "silk-ribbons",
+            "shader": "vec4 effect(vec2 uv) {\n  float t = uSongTime;\n  vec2 p = (uv - .5) * vec2(uResolution.x / max(uResolution.y, 1.), 1.);\n  vec3 light = vec3(0.);\n  float alpha = 0.;\n  for (int i = 0; i < 5; i++) {\n    float f = float(i);\n    float center = -.26 + f * .105 + sin(p.x * (1.4 + f * .12) + t * .11 + f * .9) * .075;\n    float d = abs(p.y - center);\n    float glow = exp(-d * (50. + f * 4.)) * (.07 + clamp(uBands.y, 0., 1.) * .025);\n    vec3 ink = mix(vec3(.12, .30, .58), vec3(.95, .54, .16), .5 + .5 * sin(f * .9 + t * .035));\n    float edge = .3 + .7 * smoothstep(.18, .85, abs(p.x));\n    glow *= edge;\n    light += ink * glow;\n    alpha += glow * .65;\n  }\n  float halo = exp(-dot(p - vec2(.58, .20), p - vec2(.58, .20)) * 12.) * .025;\n  light += vec3(.9, .48, .15) * halo;\n  light *= 2.4;\n  alpha = clamp((alpha + halo) * 2.4, 0., .48);\n  return vec4(light / max(alpha, .001), alpha);\n}"
+          },
+          {
+            "id": "echo-halos",
+            "shader": "vec4 effect(vec2 uv) {\n  float t = uSongTime;\n  vec2 p = (uv - .5) * vec2(uResolution.x / max(uResolution.y, 1.), 1.);\n  vec3 light = vec3(0.);\n  float alpha = 0.;\n  for (int i = 0; i < 6; i++) {\n    float f = float(i);\n    float phase = fract(t * .019 + f / 6.);\n    float envelope = pow(sin(PI * phase), 2.);\n    vec2 center = vec2(mix(-.58, .58, mod(f, 2.)), .06 * sin(f + t * .04));\n    vec2 q = (p - center) * vec2(1., 1.35);\n    float radius = .07 + phase * .65 + clamp(uBands.x, 0., 1.) * .008;\n    float ring = exp(-abs(length(q) - radius) * 105.) * envelope * .16;\n    float soft = exp(-abs(length(q) - radius) * 24.) * envelope * .025;\n    vec3 ink = mix(vec3(.10, .25, .48), vec3(.95, .61, .24), mod(f, 2.));\n    light += ink * (ring + soft);\n    alpha += (ring + soft) * .75;\n  }\n  light *= 1.8;\n  alpha = clamp(alpha * 1.8, 0., .5);\n  return vec4(light / max(alpha, .001), alpha);\n}"
+          },
+          {
+            "id": "midnight-stars",
+            "shader": "vec4 effect(vec2 uv) {\n  float t = uSongTime;\n  vec2 p = (uv - .5) * vec2(uResolution.x / max(uResolution.y, 1.), 1.);\n  float moon = exp(-dot(p - vec2(-.62, .28), p - vec2(-.62, .28)) * 17.) * .045;\n  vec3 light = vec3(.15, .29, .53) * moon;\n  float alpha = moon;\n  for (int i = 0; i < 28; i++) {\n    float f = float(i) + 1.;\n    vec2 center = vec2((hash(f * 17.) - .5) * 2.9, hash(f * 37.) - .5);\n    center += vec2(.012 * sin(t * .04 + f), .018 * cos(t * .035 + f));\n    vec2 q = p - center;\n    float radius = .003 + hash(f * 43.) * .004;\n    float star = exp(-dot(q, q) / (radius * radius));\n    float shimmer = .055 + .035 * sin(t * (.18 + hash(f) * .09) + f);\n    float haze = exp(-dot(q, q) / .0008) * .012;\n    float glow = star * shimmer + haze;\n    vec3 ink = mix(vec3(.26, .43, .70), vec3(.96, .67, .30), hash(f * 61.));\n    light += ink * glow;\n    alpha += glow * .8;\n  }\n  light *= 2.2;\n  alpha = clamp(alpha * 2.2, 0., .45);\n  return vec4(light / max(alpha, .001), alpha);\n}"
+          }
+        ],
+        "cues": [
+          {
+            "begin": "00:00:00.000",
+            "end": "00:00:16.000",
+            "shader": "amber-room",
+            "transition": {
+              "duration": 3,
+              "easing": "smooth"
+            }
+          },
+          {
+            "begin": "00:00:16.000",
+            "end": "00:00:38.000",
+            "shader": "silk-ribbons",
+            "transition": {
+              "duration": 4,
+              "easing": "smooth"
+            }
+          },
+          {
+            "begin": "00:00:38.000",
+            "end": "00:01:03.000",
+            "shader": "echo-halos",
+            "transition": {
+              "duration": 5,
+              "easing": "smooth"
+            }
+          },
+          {
+            "begin": "00:01:03.000",
+            "end": "00:01:25.000",
+            "shader": "midnight-stars",
+            "transition": {
+              "duration": 5,
+              "easing": "smooth"
+            }
+          },
+          {
+            "begin": "00:01:25.000",
+            "end": "00:01:50.000",
+            "shader": "silk-ribbons",
+            "transition": {
+              "duration": 5,
+              "easing": "smooth"
+            }
+          },
+          {
+            "begin": "00:01:50.000",
+            "end": "00:02:18.000",
+            "shader": "echo-halos",
+            "transition": {
+              "duration": 6,
+              "easing": "smooth"
+            }
+          },
+          {
+            "begin": "00:02:18.000",
+            "end": "00:02:35.000",
+            "shader": "amber-room",
+            "transition": {
+              "duration": 5,
+              "easing": "smooth"
+            }
+          },
+          {
+            "begin": "00:02:35.000",
+            "end": "00:02:47.053",
+            "shader": "midnight-stars",
+            "transition": {
+              "duration": 6,
+              "easing": "smooth"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
