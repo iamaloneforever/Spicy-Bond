@@ -59,6 +59,10 @@ export function settingsMarkup(config: Config): string {
     <button class="outline-button" id="save-lyrics-key">Save lyrics key</button>
     <p class="panel-note" id="lyrics-key-feedback" role="alert"></p>
     <p class="panel-note" id="lyrics-status">Add a Spicy key or enable LRCLIB fallback.</p>
+    <button class="outline-button" id="clear-lyrics-cache">Clear saved lyric cache</button>
+    <p class="panel-note">Frequent plays extend lyric retention up to 90 days; long-idle songs expire sooner. Missing results expire after 15 minutes.</p>
+    <p class="panel-note" id="lyrics-cache-status" role="status">Cache retention adapts to your listening frequency.</p>
+    <div class="lyric-cache-list" id="lyrics-cache-list" aria-live="polite"></div>
     ${sourceLicensesMarkup()}
     <p class="panel-note">Allow ${brand.pagesOrigin} in your Spicy application. LRCLIB is the fallback when a Spicy match or lyrics are missing. Install the Windows companion for accurate timing. <a href="${brand.repository}/blob/main/docs/lyrics.md" target="_blank" rel="noopener noreferrer">Setup guide ↗</a></p>
     <div class="section-label">Demo and diagnostics</div>

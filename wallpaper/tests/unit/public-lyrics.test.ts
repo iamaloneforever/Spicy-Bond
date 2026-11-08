@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { lookupLyrics, parseLrclib } from '../../src/lyrics/PublicLyrics';
+import { lookupLyrics, parseLrclib, lyricsCache } from '../../src/lyrics/PublicLyrics';
 import { parsePlayback } from '../../src/lyrics/Lyrics';
 const playback = parsePlayback({ title: 'Test song', artist: 'Test artist', trackId: '', duration: 90, position: 1 })!;
 const base = { trackName: 'Test song', artistName: 'Test artist', duration: 90 };
-afterEach(() => vi.unstubAllGlobals());
+afterEach(async () => { vi.unstubAllGlobals(); await lyricsCache.clear(); });
 describe('documented public lyrics', () => {
   it('accepts a reliable playback clock without a Spotify ID', () => {
     expect(playback.trackId).toBe('');

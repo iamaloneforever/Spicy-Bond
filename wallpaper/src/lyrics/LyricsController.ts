@@ -1,4 +1,4 @@
-import { lookupLyrics, lookupSelectedLyrics } from './PublicLyrics';
+import { lookupLyrics, lookupSelectedLyrics, lyricsCache } from './PublicLyrics';
 import type { SongCandidate } from '../music/SongSearch';
 import { parsePlayback, playbackPosition, lyricPosition, type Lyrics, type Playback } from './Lyrics';
 import { defaults, type Config } from '../core/Config';
@@ -19,6 +19,8 @@ export class LyricsController {
   private received = 0;
   private nextPoll = 0;
   private pending = false;
+  private legacyBridge = false;
+  private stream: AbortController | null = null;
   private request: AbortController | null = null;
   private attempted = '';
   private nextRetry = 0;
@@ -27,6 +29,7 @@ export class LyricsController {
   private key = '';
   private disposed = false;
   private song = '';
+  private countedSongKey = '';
   private selected: SongCandidate | null = null;
   private enabled = false;
   onContext: ((identity: string, playback: Playback | null, enabled: boolean, allowPublic: boolean, hasLyrics: boolean) => void) | null = null;
@@ -68,7 +71,7 @@ export class LyricsController {
   setPalette(palette: string): void { if (palette !== this.palette) { this.palette = palette; this.updatePalette(); } }
   configure(key: string): void {
     this.key = /^sl_pk_[A-Za-z0-9_-]+$/.test(key.trim()) ? key.trim() : '';
-    this.generation++; this.request?.abort(); this.attempted = ''; this.nextPoll = 0; this.nextRetry = 0; this.nextLyricRetry = 0; this.clear();
+    this.generation++; this.request?.abort(); this.stream?.abort(); this.stream = null; this.legacyBridge = false; this.attempted = ''; this.nextPoll = 0; this.nextRetry = 0; this.nextLyricRetry = 0; this.clear();
     this.status.textContent = this.key ? 'Waiting for the Windows companion.' : 'Add a Spicy key or enable LRCLIB fallback in settings.';
   }
   private clear(): void { this.renderer?.clear(); this.lyrics = null; this.rendered = null; this.lyricStatus = ''; this.layer.replaceChildren(); this.setVisible(false); }
@@ -79,17 +82,21 @@ export class LyricsController {
   playbackTime(now: number): number | null {
     return this.playback && now - this.received <= 3500 ? playbackPosition(this.playback, this.received, now) : null;
   }
-  tick(now: number, track: Track | null, enabled: boolean, allowPublic: boolean, timing = false): void {
+  tick(now: number, track: Track | null, enabled: boolean, allowPublic: boolean, playbackNeeded = false): void {
     const renderer = this.renderer;
-    renderer?.appearance(this.appearance, this.reducedMotion.matches);
+    if (!renderer) return;
+    renderer.appearance(this.appearance, this.reducedMotion.matches);
     if (this.allowPublic !== allowPublic) { this.allowPublic = allowPublic; this.generation++; this.request?.abort(); this.attempted = ''; this.nextRetry = 0; this.nextLyricRetry = 0; this.clear(); }
     const song = track ? track.title + '\n' + (track.artist || track.albumArtist) + '\n' + track.album : '';
-    if (song !== this.song) { this.song = song; this.selected = null; this.generation++; this.request?.abort(); this.playback = null; this.attempted = ''; this.nextPoll = 0; this.nextRetry = 0; this.nextLyricRetry = 0; this.clear(); }
+    if (!track) this.countedSongKey = '';
+    if (song !== this.song) { this.song = song; this.selected = null; this.generation++; this.request?.abort(); this.stream?.abort(); this.stream = null; this.legacyBridge = false; this.playback = null; this.attempted = ''; this.nextPoll = 0; this.nextRetry = 0; this.nextLyricRetry = 0; this.clear(); }
     this.enabled = enabled && !!track;
+    const needsPlayback = !!track && (this.enabled || playbackNeeded);
+    if (!needsPlayback) { this.stream?.abort(); this.stream = null; this.playback = null; this.legacyBridge = false; this.nextPoll = 0; }
+    else if (!this.stream && !this.legacyBridge && now >= this.nextRetry) { this.stream = new AbortController(); void this.receive(track, this.generation, this.stream); }
     this.onContext?.(this.song, this.playback, this.enabled, this.allowPublic, !!this.lyrics);
-    if ((!enabled && !timing) || !track) { this.setVisible(false); return; }
-    if (now >= this.nextPoll && !this.pending && now >= this.nextRetry) { this.nextPoll = now + 500; void this.poll(track); }
-    if (!enabled || !renderer) { this.setVisible(false); return; }
+    if (track && this.legacyBridge && now >= this.nextPoll && !this.pending) { this.nextPoll = now + 1000; void this.pollLegacy(track, this.generation); }
+    if (!enabled || !track) { this.setVisible(false); return; }
     if (!this.playback || !this.lyrics || now - this.received > 3500) { this.setVisible(false); return; }
     this.lastPosition = lyricPosition(this.playback, this.received, now, this.appearance.lyricOffset);
     if (this.rendered !== this.lyrics) {
@@ -121,20 +128,67 @@ export class LyricsController {
     this.lastPosition = position; this.setVisible(true);
     this.renderer.clock(position, true, true, now, 35, 1);
   }
-  private async poll(track: Track): Promise<void> {
+  private async receive(track: Track, generation: number, controller: AbortController): Promise<void> {
+    const token = new URLSearchParams(location.hash.slice(1)).get('bridge');
+    const headers: Record<string, string> = token && /^[a-f0-9]{64}$/.test(token) ? { 'X-RetroWave-Key': token } : {};
+    try {
+      const response = await fetch('http://127.0.0.1:43821/playback-events', { headers, signal: controller.signal, cache: 'no-store' });
+      if (!response.ok) throw new Error('Companion unavailable');
+      if (!response.headers.get('content-type')?.includes('text/event-stream')) {
+        // Older companion builds do not offer events; keep their existing bridge contract working.
+        const data: unknown = await response.json();
+        if (this.disposed || generation !== this.generation || controller.signal.aborted) return;
+        this.legacyBridge = true; this.stream = null; this.nextPoll = performance.now() + 1000;
+        await this.applyPlayback(data, track, generation);
+        return;
+      }
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error('Playback event stream unavailable');
+      const decoder = new TextDecoder(); let buffer = '';
+      while (!controller.signal.aborted) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let boundary: number;
+        while ((boundary = buffer.indexOf('\n\n')) >= 0) {
+          const message = buffer.slice(0, boundary); buffer = buffer.slice(boundary + 2);
+          const payload = message.split('\n').filter(line => line.startsWith('data:')).map(line => line.slice(5).trim()).join('\n');
+          if (!payload) continue;
+          try { await this.applyPlayback(JSON.parse(payload), track, generation); } catch { /* Ignore malformed companion events. */ }
+        }
+      }
+      if (!controller.signal.aborted) throw new Error('Playback event stream ended');
+    } catch (error) {
+      if (controller.signal.aborted || this.disposed || generation !== this.generation) return;
+      this.stream = null; this.nextRetry = performance.now() + 1000;
+      this.status.textContent = 'Reconnecting to the Windows companion playback stream…';
+    }
+  }
+  private async pollLegacy(track: Track, generation: number): Promise<void> {
     this.pending = true;
-    const generation = this.generation;
     try {
       const token = new URLSearchParams(location.hash.slice(1)).get('bridge');
       const headers: Record<string, string> = token && /^[a-f0-9]{64}$/.test(token) ? { 'X-RetroWave-Key': token } : {};
       const response = await fetch('http://127.0.0.1:43821/now-playing', { headers, signal: AbortSignal.timeout(2500), cache: 'no-store' });
       if (!response.ok) throw new Error('Companion unavailable');
-      const data: unknown = await response.json();
+      await this.applyPlayback(await response.json(), track, generation);
+    } catch (error) {
+      if (this.disposed || generation !== this.generation || (error instanceof DOMException && error.name === 'AbortError')) return;
+      this.legacyBridge = false; this.generation++; this.request?.abort(); this.playback = null; this.clear(); this.attempted = ''; this.nextRetry = performance.now() + 10000;
+      this.status.textContent = 'Start the Windows companion and allow local-network access for this wallpaper to read playback timing.';
+    } finally { this.pending = false; }
+  }
+  private async applyPlayback(data: unknown, track: Track, generation: number): Promise<void> {
       if (this.disposed || generation !== this.generation) return;
       const playback = parsePlayback(data);
-      if (!playback || !this.sameSong(track, playback)) { this.generation++; this.request?.abort(); this.attempted = ''; this.playback = null; this.clear(); this.status.textContent = 'Waiting for matching song metadata and a usable playback timeline from the Windows companion.'; return; }
+      if (!playback || !this.sameSong(track, playback)) { this.request?.abort(); this.attempted = ''; this.playback = null; this.clear(); this.status.textContent = 'Waiting for matching song metadata and a usable playback timeline from the Windows companion.'; return; }
       const age = playback.capturedAtUnixMs === undefined ? 0 : Math.max(0, Date.now() - playback.capturedAtUnixMs);
       if (age > 3500) throw new Error('Stale playback snapshot');
+      const playIdentity = JSON.stringify([playback.title.normalize('NFKC').toLocaleLowerCase().replace(/[^\p{L}\p{N}]/gu, ''), playback.artist.normalize('NFKC').toLocaleLowerCase().replace(/[^\p{L}\p{N}]/gu, '')]);
+      if (playback.isPlaying && playIdentity !== this.countedSongKey) {
+        this.countedSongKey = playIdentity;
+        void lyricsCache.recordPlay({ songKey: playIdentity, title: playback.title, artist: playback.artist });
+      }
       this.playback = playback; this.received = performance.now() - age;
       this.onContext?.(this.song, playback, this.enabled, this.allowPublic, !!this.lyrics);
 
@@ -145,11 +199,6 @@ export class LyricsController {
         this.attempted = identity;
         void this.fetchLyrics(playback, track.album, generation);
       }
-    } catch (error) {
-      if (this.disposed || generation !== this.generation || (error instanceof DOMException && error.name === 'AbortError')) return;
-      this.generation++; this.request?.abort(); this.playback = null; this.clear(); this.attempted = ''; this.nextRetry = performance.now() + 10000;
-      this.status.textContent = 'Start the Windows companion and allow local-network access for this wallpaper to read playback timing.';
-    } finally { this.pending = false; }
   }
   private async fetchLyrics(playback: Playback, album: string, generation: number): Promise<void> {
     if (!this.lyrics) this.clear();
@@ -188,6 +237,6 @@ export class LyricsController {
     this.selected = candidate; this.generation++; this.request?.abort(); this.attempted = ''; this.nextLyricRetry = 0; this.nextPoll = 0;
     this.clear(); this.status.textContent = `Selected ${candidate.title} — ${candidate.artist}. Loading lyrics…`;
   }
-  suspend(): void { this.renderer?.clock(this.lastPosition, false, false); }
-  dispose(): void { this.disposed = true; this.clear(); this.request?.abort(); }
+  suspend(): void { this.renderer?.clock(this.lastPosition, false, false); this.stream?.abort(); this.stream = null; this.legacyBridge = false; this.playback = null; this.nextPoll = 0; }
+  dispose(): void { this.disposed = true; this.stream?.abort(); this.stream = null; this.clear(); this.request?.abort(); }
 }

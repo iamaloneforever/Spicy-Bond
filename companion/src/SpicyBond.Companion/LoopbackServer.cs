@@ -56,13 +56,43 @@ public sealed class LoopbackServer(string token, int port = LoopbackServer.Port,
                 var request = lines[0].Split(' ');
                 var allowed = IsAllowed(headers.GetValueOrDefault("Host", ""), headers.GetValueOrDefault("Origin", ""), port);
                 var search = request.Length == 3 && request[1].StartsWith("/music-search?", StringComparison.Ordinal) && searchMusic is not null;
+                var playbackEvents = request.Length == 3 && request[1] == "/playback-events";
                 var preferences = request.Length == 3 && request[1] == "/wallpaper-settings";
                 var export = request.Length == 3 && request[1] == "/effect-export";
                 var receipt = request.Length == 3 && request[1] == "/lyrics-status" && reportLyrics is not null;
-                var valid = request.Length == 3 && request[2] == "HTTP/1.1" && ((request[1] is "/now-playing" or "/now-playing?artwork=1" or "/inspector" or "/inspector?artwork=1") && request[0] is "GET" or "OPTIONS" || receipt && request[0] is "POST" or "OPTIONS" || search && request[0] is "GET" or "OPTIONS" || preferences && request[0] is "GET" or "POST" or "OPTIONS" || export && request[0] is "POST" or "OPTIONS");
+                var valid = request.Length == 3 && request[2] == "HTTP/1.1" && ((request[1] is "/now-playing" or "/now-playing?artwork=1" or "/inspector" or "/inspector?artwork=1" or "/playback-events") && request[0] is "GET" or "OPTIONS" || receipt && request[0] is "POST" or "OPTIONS" || search && request[0] is "GET" or "OPTIONS" || preferences && request[0] is "GET" or "POST" or "OPTIONS" || export && request[0] is "POST" or "OPTIONS");
                 var supplied = headers.GetValueOrDefault("X-RetroWave-Key", "");
                 var authenticated = request[0] == "OPTIONS" || System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(supplied), Encoding.UTF8.GetBytes(token));
                 var code = !allowed || !authenticated ? "403 Forbidden" : !valid ? "404 Not Found" : "200 OK";
+                if (allowed && authenticated && valid && playbackEvents && request[0] == "GET")
+                {
+                    timeout.CancelAfter(Timeout.Infinite);
+                    var streamCors = $"Access-Control-Allow-Origin: {headers["Origin"]}\r\nAccess-Control-Allow-Private-Network: true\r\nVary: Origin\r\n";
+                    await stream.WriteAsync(Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\n{streamCors}Content-Type: text/event-stream; charset=utf-8\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: keep-alive\r\n\r\n"), timeout.Token);
+                    await stream.FlushAsync(timeout.Token);
+                    PlaybackSnapshot? previous = null;
+                    long sentAt = 0;
+                    while (!cancellation.IsCancellationRequested && client.Connected)
+                    {
+                        var current = read();
+                        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                        var changed = previous is null || current.TrackKey != previous.TrackKey || current.Status != previous.Status || current.IsPlaying != previous.IsPlaying || current.Rate != previous.Rate || current.Duration != previous.Duration;
+                        var elapsed = previous is null ? 0 : Math.Max(0, (now - sentAt) / 1000d);
+                        var expectedPosition = previous is null ? current.Position : previous.Position + (previous.IsPlaying ? elapsed * previous.Rate : 0);
+                        var seeked = previous is not null && Math.Abs(current.Position - expectedPosition) >= 0.9;
+                        var heartbeatMs = current.IsPlaying ? 1000 : 2000;
+                        if (changed || seeked || previous is null || now - sentAt >= heartbeatMs)
+                        {
+                            var payload = current with { Thumbnail = "", Candidates = [], ProviderError = "", Providers = [], Genres = [] };
+                            var message = Encoding.UTF8.GetBytes("data: " + JsonSerializer.Serialize(payload, PlaybackSnapshot.Json) + "\n\n");
+                            await stream.WriteAsync(message, cancellation);
+                            await stream.FlushAsync(cancellation);
+                            previous = current; sentAt = now;
+                        }
+                        await Task.Delay(200, cancellation);
+                    }
+                    return;
+                }
                 if (allowed && authenticated && valid && receipt && request[0] == "POST")
                 {
                     if (headers.ContainsKey("Transfer-Encoding") || !int.TryParse(headers.GetValueOrDefault("Content-Length"), out var length) || length is <= 0 or > 1024) code = "400 Bad Request";
