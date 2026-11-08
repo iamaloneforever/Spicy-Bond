@@ -80,9 +80,10 @@ export class LyricsController {
   playbackTime(now: number): number | null {
     return this.playback && now - this.received <= 3500 ? playbackPosition(this.playback, this.received, now) : null;
   }
-  tick(now: number, track: Track | null, enabled: boolean, allowPublic: boolean, timing = false): void {
+  tick(now: number, track: Track | null, enabled: boolean, allowPublic: boolean): void {
     const renderer = this.renderer;
-    renderer?.appearance(this.appearance, this.reducedMotion.matches);
+    if (!renderer) return;
+    renderer.appearance(this.appearance, this.reducedMotion.matches);
     if (this.allowPublic !== allowPublic) { this.allowPublic = allowPublic; this.generation++; this.request?.abort(); this.attempted = ''; this.nextRetry = 0; this.nextLyricRetry = 0; this.clear(); }
     const song = track ? track.title + '\n' + (track.artist || track.albumArtist) + '\n' + track.album : '';
     if (!track) this.countedSongKey = '';
